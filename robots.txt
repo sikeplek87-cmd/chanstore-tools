@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://chanstore.my.id/sitemap.xml
