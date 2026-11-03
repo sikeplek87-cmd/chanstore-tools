@@ -15,3 +15,67 @@ if(tool==='merge')byId('run')?.addEventListener('click',async()=>{try{let files=
 if(tool==='imgpdf')byId('run')?.addEventListener('click',async()=>{try{let fs=[...byId('files').files];if(!fs.length)return output('Pilih satu atau beberapa gambar.');let lib=await loadPdfLib(),pdf=await lib.PDFDocument.create();for(let f of fs){let bytes=await f.arrayBuffer(),img=f.type==='image/png'?await pdf.embedPng(bytes):await pdf.embedJpg(bytes),page=pdf.addPage([img.width,img.height]);page.drawImage(img,{x:0,y:0,width:img.width,height:img.height})}downloadBlob(new Blob([await pdf.save()],{type:'application/pdf'}),'gambar-ke-pdf.pdf');output('PDF berhasil dibuat.')}catch(e){output('Gagal. Gunakan gambar JPG atau PNG yang valid.')}});
 async function imageFile(){let f=byId('file')?.files[0];if(!f)return output('Pilih gambar terlebih dahulu.');let url=URL.createObjectURL(f),img=new Image();img.onload=()=>{let w=+(byId('width')?.value||img.width),h=+(byId('height')?.value||img.height);if(tool==='resize'&&(!w||!h)){output('Ukuran tidak valid.');return}let c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);c.toBlob(blob=>{if(!blob)return output('Gagal membuat gambar.');downloadBlob(blob,tool==='resize'?'gambar-ubah-ukuran.png':'gambar-kompres.jpg');output('Selesai. Ukuran awal: '+(f.size/1024).toFixed(1)+' KB. Hasil: '+(blob.size/1024).toFixed(1)+' KB.')},tool==='resize'?'image/png':'image/jpeg',+(byId('quality')?.value||75)/100);URL.revokeObjectURL(url)};img.onerror=()=>output('File gambar tidak dapat dibaca.');img.src=url}
 if(tool==='compress'||tool==='resize')byId('run')?.addEventListener('click',imageFile);
+
+
+// Kompres PDF: render halaman dengan PDF.js lalu susun ulang menggunakan pdf-lib.
+// Catatan: hasil berupa halaman gambar (raster), bukan teks PDF yang dapat dipilih.
+async function loadPdfJs(){
+  if(window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((resolve,reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=resolve; s.onerror=()=>reject(new Error('Gagal memuat mesin pembaca PDF.'));
+    document.head.append(s);
+  });
+  if(!window.pdfjsLib) throw new Error('Mesin pembaca PDF tidak tersedia.');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+if(tool==='compresspdf') byId('compressPdf')?.addEventListener('click',async()=>{
+  const button=byId('compressPdf'), file=byId('pdfFile')?.files?.[0], quality=Number(byId('pdfQuality')?.value||0.68);
+  const status=byId('pdfResult');
+  const say=s=>{if(status)status.textContent=s};
+  if(!file){say('Pilih file PDF terlebih dahulu.');return;}
+  if(file.type!=='application/pdf'&&!file.name.toLowerCase().endsWith('.pdf')){say('File harus berformat PDF.');return;}
+  if(file.size>30*1024*1024){say('Ukuran file melebihi batas 30 MB. Coba PDF yang lebih kecil agar HP tidak kehabisan memori.');return;}
+  button.disabled=true;
+  try{
+    say('Memuat mesin PDF…');
+    const [pdfjs,lib]=await Promise.all([loadPdfJs(),loadPdfLib()]);
+    const bytes=await file.arrayBuffer();
+    const source=await pdfjs.getDocument({data:new Uint8Array(bytes)}).promise;
+    if(source.numPages>40){throw new Error('PDF memiliki '+source.numPages+' halaman. Batas alat ini 40 halaman agar lebih aman untuk memori HP.');}
+    const outputPdf=await lib.PDFDocument.create();
+    for(let i=1;i<=source.numPages;i++){
+      say('Memproses halaman '+i+' dari '+source.numPages+'…');
+      const page=await source.getPage(i);
+      const base=page.getViewport({scale:1});
+      const scale=Math.min(1.5,Math.max(1,1.25));
+      const viewport=page.getViewport({scale});
+      const canvas=document.createElement('canvas');
+      canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+      const ctx=canvas.getContext('2d',{alpha:false});
+      if(!ctx)throw new Error('Browser tidak dapat membuat canvas.');
+      ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);
+      await page.render({canvasContext:ctx,viewport}).promise;
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+      if(!blob)throw new Error('Gagal mengoptimalkan halaman '+i+'.');
+      const jpg=await blob.arrayBuffer();
+      const embedded=await outputPdf.embedJpg(jpg);
+      const outPage=outputPdf.addPage([base.width,base.height]);
+      outPage.drawImage(embedded,{x:0,y:0,width:base.width,height:base.height});
+      canvas.width=1;canvas.height=1;
+      page.cleanup();
+    }
+    say('Menyusun file PDF hasil…');
+    const saved=await outputPdf.save({useObjectStreams:true});
+    const resultBlob=new Blob([saved],{type:'application/pdf'});
+    downloadBlob(resultBlob,'kompres-chanstore.pdf');
+    const before=(file.size/1024).toFixed(1),after=(resultBlob.size/1024).toFixed(1);
+    const diff=((1-resultBlob.size/file.size)*100);
+    say('Selesai. Ukuran awal: '+before+' KB. Ukuran hasil: '+after+' KB. '+(diff>0?'Berkurang '+diff.toFixed(1)+'%.':'Ukuran tidak berkurang; PDF asli mungkin sudah teroptimasi.'));
+    await source.destroy();
+  }catch(e){
+    say('Gagal memproses PDF: '+(e?.message||'Terjadi kesalahan. Pastikan PDF tidak rusak atau terkunci.'));
+  }finally{button.disabled=false;}
+});
